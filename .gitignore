@@ -1,0 +1,8 @@
+node_modules/
+state/
+snapshots/
+*.log
+config.local.json
+.DS_Store
+__pycache__/
+*.pid

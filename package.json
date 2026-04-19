@@ -1,0 +1,22 @@
+{
+  "type": "module",
+  "scripts": {
+    "login": "node src/monitor.mjs login",
+    "poll": "node src/monitor.mjs poll",
+    "reauth": "node src/monitor.mjs reauth",
+    "otp-test": "node src/monitor.mjs otp-test",
+    "fetch-case-json": "node src/monitor.mjs fetch-case-json",
+    "check-all-cases": "node src/monitor.mjs check-all-cases",
+    "scheduled-check": "node src/monitor.mjs scheduled-check",
+    "scheduler": "node src/monitor.mjs scheduler",
+    "start": "./uscis.sh start",
+    "stop": "./uscis.sh stop",
+    "status": "./uscis.sh status",
+    "restart": "./uscis.sh restart",
+    "logs": "./uscis.sh logs",
+    "follow": "./uscis.sh follow"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

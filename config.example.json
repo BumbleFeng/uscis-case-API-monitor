@@ -1,0 +1,24 @@
+{
+  "uscisEmail": "jr.deng@icloud.com",
+  "uscisUsername": "jr.deng@icloud.com",
+  "uscisPassword": "your-uscis-password",
+  "receiptNumbers": [
+    "IOE0934141842",
+    "IOE9999999999"
+  ],
+  "loginUrl": "https://my.uscis.gov/oidc/login",
+  "monitorUrl": "https://myaccount.uscis.gov/",
+  "apiUrl": "https://my.uscis.gov/account/case-service/api/cases",
+  "monitorReadySelector": "body",
+  "contentSelector": "body",
+  "postLoginWaitMs": 5000,
+  "otpWaitTimeoutMs": 30000,
+  "otp": {
+    "mode": "sms-imessage",
+    "timeoutSeconds": 180,
+    "pollIntervalSeconds": 2,
+    "sinceSeconds": 300,
+    "senderPhone": "85728",
+    "codeRegex": "\\b(\\d{6})\\b"
+  }
+}
