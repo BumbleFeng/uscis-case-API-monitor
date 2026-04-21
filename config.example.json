@@ -13,6 +13,9 @@
   "contentSelector": "body",
   "postLoginWaitMs": 5000,
   "otpWaitTimeoutMs": 30000,
+  "scheduler": {
+    "intervalHours": 1
+  },
   "otp": {
     "mode": "sms-imessage",
     "timeoutSeconds": 180,

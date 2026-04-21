@@ -686,15 +686,22 @@ async function fetchSingleCase(receiptNumber, config) {
   const cookieHeader = await getCookies(config);
   
   try {
-    const response = await fetch(apiUrl, {
-      method: "GET",
-      headers: {
-        "Cookie": cookieHeader,
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json",
-        "Referer": config.monitorUrl,
-      },
-    });
+    let response;
+    try {
+      response = await fetch(apiUrl, {
+        method: "GET",
+        headers: {
+          "Cookie": cookieHeader,
+          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "application/json",
+          "Referer": config.monitorUrl,
+        },
+      });
+    } catch (networkErr) {
+      const err = new Error(`Network error: ${networkErr.message}`);
+      err.code = "NETWORK_ERROR";
+      throw err;
+    }
     
     // Check for auth failure: HTTP 401 OR API response with data: null + error object
     if (response.status === 401) {
@@ -720,8 +727,8 @@ async function fetchSingleCase(receiptNumber, config) {
     
     return data;
   } catch (error) {
-    // Don't suppress SESSION_EXPIRED errors - let them bubble up
-    if (error.code === "SESSION_EXPIRED") {
+    // Don't suppress SESSION_EXPIRED or NETWORK_ERROR - let them propagate with code
+    if (error.code === "SESSION_EXPIRED" || error.code === "NETWORK_ERROR") {
       throw error;
     }
     console.error(`❌ Error fetching ${receiptNumber}: ${error.message}`);
@@ -729,15 +736,27 @@ async function fetchSingleCase(receiptNumber, config) {
   }
 }
 
-async function sendDiscordWebhook(webhookUrl, payload) {
-  const res = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    throw new Error(`Discord webhook failed: ${res.status} ${res.statusText}`);
+async function sendDiscordWebhook(webhookUrl, payload, { retries = 2, delayMs = 3000 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        throw new Error(`Discord webhook failed: ${res.status} ${res.statusText}`);
+      }
+      return; // success
+    } catch (err) {
+      lastError = err;
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+    }
   }
+  throw lastError;
 }
 
 function buildDiscordEmbed(receiptNumber, caseData, changes) {
@@ -832,6 +851,7 @@ async function checkAllCases(config) {
             });
             continue;
           }
+
           
           // Detect changes
           const previousRecord = history[receiptNumber];
@@ -877,8 +897,12 @@ async function checkAllCases(config) {
             sessionExpired = true;
             throw error; // Bubble up to outer loop for retry
           }
-          
-          console.error(`❌ Error processing ${receiptNumber}: ${error.message}\n`);
+
+          if (error.code === "NETWORK_ERROR") {
+            console.error(`❌ Network error fetching ${receiptNumber}: ${error.message}\n`);
+          } else {
+            console.error(`❌ Error processing ${receiptNumber}: ${error.message}\n`);
+          }
           results.push({
             receiptNumber,
             isChanged: false,
@@ -906,11 +930,30 @@ async function checkAllCases(config) {
       
       // Send Discord summary
       const webhookUrl = config?.discordWebhookUrl || process.env.PHONEMONITOR_DISCORD_WEBHOOK_URL;
-      if (webhookUrl && summary.changedCases === 0) {
+      if (webhookUrl) {
         const ts = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC";
-        await sendDiscordWebhook(webhookUrl, {
-          content: `\`${ts}\` ✓ Checked ${summary.totalCases} cases — no changes found.`,
-        }).catch((e) => console.error(`Discord notify failed: ${e.message}`));
+        const errorResults = summary.results.filter(r => r.error);
+        const successResults = summary.results.filter(r => !r.error);
+
+        if (errorResults.length === summary.totalCases) {
+          // All cases failed — send error alert
+          const firstError = errorResults[0]?.error || "Unknown error";
+          await sendDiscordWebhook(webhookUrl, {
+            content: `⚠️ \`${ts}\` All ${summary.totalCases} case checks failed — \`${firstError}\`. Will retry next cycle.`,
+          }).catch((e) => console.error(`Discord notify failed: ${e.message}`));
+        } else if (errorResults.length > 0) {
+          // Partial failure
+          const failed = errorResults.map(r => r.receiptNumber).join(", ");
+          await sendDiscordWebhook(webhookUrl, {
+            content: `⚠️ \`${ts}\` Checked ${summary.totalCases} cases — ${successResults.length} OK, ${errorResults.length} failed (${failed}). Will retry next cycle.`,
+          }).catch((e) => console.error(`Discord notify failed: ${e.message}`));
+        } else if (summary.changedCases === 0) {
+          // All success, no changes
+          await sendDiscordWebhook(webhookUrl, {
+            content: `\`${ts}\` ✓ Checked ${summary.totalCases} cases — no changes found.`,
+          }).catch((e) => console.error(`Discord notify failed: ${e.message}`));
+        }
+        // If changedCases > 0, individual notifications already sent via triggerNotification()
       }
       
       return summary; // Success, exit loop
@@ -1009,7 +1052,17 @@ function isWithinSchedule() {
   return hour >= 9 && hour < 20;
 }
 
-function nextScheduledRun() {
+function getSchedulerIntervalMs(config) {
+  // Supports either config.scheduler.intervalHours or config.schedulerIntervalHours.
+  const raw = config?.scheduler?.intervalHours ?? config?.schedulerIntervalHours ?? 3;
+  const hours = Number(raw);
+  if (!Number.isFinite(hours) || hours <= 0) {
+    return 3 * 60 * 60 * 1000;
+  }
+  return Math.max(Math.round(hours * 60 * 60 * 1000), 60000);
+}
+
+function nextScheduledRun(intervalMs) {
   // Returns ms until next valid run window (ET weekday 9am)
   const now = new Date();
   const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
@@ -1017,9 +1070,9 @@ function nextScheduledRun() {
   const day = et.getDay();
   const hour = et.getHours();
   
-  // If within schedule, next run in 3h
+  // If within schedule, next run based on configured interval.
   if (day >= 1 && day <= 5 && hour >= 9 && hour < 20) {
-    return 3 * 60 * 60 * 1000;
+    return intervalMs;
   }
   
   // Calculate time until next weekday 9am ET
@@ -1067,8 +1120,14 @@ async function scheduledCheck(config) {
 }
 
 async function runScheduler(config) {
+  const intervalMs = getSchedulerIntervalMs(config);
+  const intervalHours = Number((intervalMs / (60 * 60 * 1000)).toFixed(2));
+  const intervalLabel = Number.isInteger(intervalHours)
+    ? `${intervalHours} hour${intervalHours === 1 ? "" : "s"}`
+    : `${intervalHours} hours`;
+
   console.log("🕐 USCIS Case Monitor Scheduler started");
-  console.log("   Schedule: Weekdays 9am–8pm ET, every 3 hours");
+  console.log(`   Schedule: Weekdays 9am–8pm ET, every ${intervalLabel}`);
   console.log("   Press Ctrl+C to stop\n");
   
   const run = async () => {
@@ -1083,7 +1142,7 @@ async function runScheduler(config) {
       console.log(`⏸️  Outside schedule (${etStr} ET). Skipping.`);
     }
     
-    const waitMs = nextScheduledRun();
+    const waitMs = nextScheduledRun(intervalMs);
     const waitMin = Math.round(waitMs / 60000);
     console.log(`⏳ Next check in ${waitMin} minutes\n`);
     setTimeout(run, waitMs);

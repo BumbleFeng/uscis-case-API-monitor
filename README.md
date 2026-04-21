@@ -12,7 +12,7 @@ Automated USCIS case status monitor that checks your immigration cases periodica
 - **Smart session management** — reuses saved auth tokens; auto-re-authenticates when expired
 - **Change detection** — SHA-based field-level diff on `updatedAt`, `events`, `closed`, `actionRequired`
 - **Discord notifications** — sends alerts on case changes (or a quiet heartbeat when nothing changed)
-- **Built-in scheduler** — runs on weekdays 9 AM–8 PM ET, every 3 hours
+- **Built-in scheduler** — runs on weekdays 9 AM–8 PM ET, with configurable interval (`scheduler.intervalHours`, default 3)
 
 ## Requirements
 
@@ -52,6 +52,9 @@ Edit `config.local.json`:
   "monitorUrl": "https://myaccount.uscis.gov/",
   "apiUrl": "https://my.uscis.gov/account/case-service/api/cases",
   "discordWebhookUrl": "https://discord.com/api/webhooks/...",
+  "scheduler": {
+    "intervalHours": 3
+  },
   "otp": {
     "mode": "sms-imessage",
     "timeoutSeconds": 300,
@@ -155,7 +158,7 @@ This starts the scheduler as a background daemon — safe to close the terminal.
 
 - PID saved to `state/scheduler.pid`
 - Logs written to `state/scheduler.log`
-- Schedule: weekdays 9 AM–8 PM ET, every 3 hours
+- Schedule: weekdays 9 AM–8 PM ET, every `scheduler.intervalHours` (default 3 hours)
 
 The scheduler automatically:
 1. Checks if current time is within schedule
