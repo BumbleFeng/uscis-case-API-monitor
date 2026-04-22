@@ -445,7 +445,28 @@ async function submitLogin(page) {
     }
   }
 
-  console.log("  ⚠️ No navigation detected after 15s, continuing anyway...");
+  // First attempt timed out — try Enter key fallback and wait another 15s
+  console.log("  ⚠️ No navigation after 15s, trying Enter key fallback...");
+  const passwordInput = await firstVisibleInPageOrFrames(page, LOGIN_PASSWORD_SELECTORS, 2000);
+  if (passwordInput) {
+    await passwordInput.press("Enter").catch(() => {});
+  }
+
+  const deadline2 = Date.now() + 15000;
+  while (Date.now() < deadline2) {
+    await page.waitForTimeout(500);
+    if (page.url() !== startUrl) {
+      console.log("  ✓ Page navigated after Enter fallback");
+      return;
+    }
+    const otpVisible = await page.locator(OTP_INPUT_SELECTORS.join(", ")).first().isVisible().catch(() => false);
+    if (otpVisible) {
+      console.log("  ✓ OTP page detected after Enter fallback");
+      return;
+    }
+  }
+
+  console.log("  ⚠️ No navigation detected after extended wait — login form submit may have failed");
 }
 
 async function browserWithState(useSavedState) {
@@ -554,6 +575,41 @@ async function login(config) {
     }
     
     console.log("✓ Successfully logged in!");
+
+    // Validate the session actually works via a real API call before saving
+    if (config.receiptNumbers?.length > 0) {
+      console.log("Validating session via API...");
+      const cookies = await context.cookies();
+      const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+      const testReceipt = config.receiptNumbers[0];
+      try {
+        const testRes = await fetch(`${config.apiUrl}/${testReceipt}`, {
+          headers: {
+            "Cookie": cookieHeader,
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Referer": config.monitorUrl,
+          },
+        });
+        if (testRes.status === 401) {
+          throw new Error("API validation failed: 401 Unauthorized — session not actually established");
+        }
+        if (testRes.ok) {
+          const data = await testRes.json().catch(() => null);
+          if (data && data.data === null && data.error) {
+            throw new Error("API validation failed: session token rejected by USCIS API");
+          }
+        }
+        console.log("✓ API session validated");
+      } catch (err) {
+        if (err.message.startsWith("API validation failed")) {
+          throw new Error(`Login appeared to succeed but auth is invalid: ${err.message}`);
+        }
+        // Network/timeout during validation — don't block, warn only
+        console.warn(`⚠️ Could not validate API session: ${err.message} (saving anyway)`);
+      }
+    }
+
     await context.storageState({ path: authFile });
     console.log(`✓ Saved authenticated session to ${authFile}`);
   } finally {
