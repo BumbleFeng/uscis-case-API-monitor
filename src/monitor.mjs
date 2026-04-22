@@ -1119,22 +1119,38 @@ function getSchedulerIntervalMs(config) {
 }
 
 function nextScheduledRun(intervalMs) {
-  // Returns ms until next valid run window (ET weekday 9am)
+  // Returns ms until the next valid clock-aligned slot in the ET weekday window.
   const now = new Date();
   const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
   const et = new Date(etStr);
   const day = et.getDay();
   const hour = et.getHours();
+  const minute = et.getMinutes();
+  const second = et.getSeconds();
+  const millisecond = et.getMilliseconds();
+  const isWeekday = day >= 1 && day <= 5;
+  const isWithinWindow = isWeekday && hour >= 9 && hour < 20;
   
-  // If within schedule, next run based on configured interval.
-  if (day >= 1 && day <= 5 && hour >= 9 && hour < 20) {
-    return intervalMs;
+  // If within schedule, wait until the next aligned slot.
+  if (isWithinWindow) {
+    const intervalMinutes = Math.max(Math.round(intervalMs / 60000), 1);
+    const minutesSinceWindowStart = (hour - 9) * 60 + minute;
+    const remainder = minutesSinceWindowStart % intervalMinutes;
+    const minutesToNextSlot = remainder === 0 ? intervalMinutes : intervalMinutes - remainder;
+    const nextSlotMinutesSinceWindowStart = minutesSinceWindowStart + minutesToNextSlot;
+
+    // Keep checks inside the 9am-8pm ET window. Anything landing at or after 8pm rolls to next weekday 9am.
+    if (nextSlotMinutesSinceWindowStart < 11 * 60) {
+      const waitMs = minutesToNextSlot * 60000 - second * 1000 - millisecond;
+      return Math.max(waitMs, 5000);
+    }
   }
   
   // Calculate time until next weekday 9am ET
   let daysUntil;
   if (day === 6) daysUntil = 2; // Sat -> Mon
   else if (day === 0) daysUntil = 1; // Sun -> Mon
+  else if (isWithinWindow) daysUntil = (day === 5) ? 3 : 1; // No remaining slot today
   else if (hour >= 20) daysUntil = (day === 5) ? 3 : 1; // After 8pm, next weekday
   else daysUntil = 0; // Before 9am today
   
