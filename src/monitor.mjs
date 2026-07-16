@@ -700,7 +700,7 @@ function detectChanges(previousData, currentData) {
   const changes = {};
 
   if (!previousData) {
-    return { isChanged: true, summary: "New case" };
+    return { isChanged: true, changes: {}, summary: "New case" };
   }
 
   // Case Status endpoint — detailed field comparison
