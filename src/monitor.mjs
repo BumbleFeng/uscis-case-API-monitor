@@ -1307,8 +1307,11 @@ async function runScheduler(config) {
     }
     
     const waitMs = nextScheduledRun(intervalMs);
+    const nextTime = new Date(Date.now() + waitMs);
+    const nextEtStr = nextTime.toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "short", timeStyle: "short" });
     const waitMin = Math.round(waitMs / 60000);
-    console.log(`⏳ Next check in ${waitMin} minutes\n`);
+    const waitLabel = waitMin >= 60 ? `${Math.floor(waitMin / 60)}h ${waitMin % 60}m` : `${waitMin}m`;
+    console.log(`⏳ Next check at ${nextEtStr} ET (in ${waitLabel})\n`);
     setTimeout(run, waitMs);
   };
   
