@@ -745,7 +745,31 @@ function detectChanges(previousData, currentData) {
   }
 
   const isChanged = Object.keys(changes).length > 0;
-  return { isChanged, changes, summary: isChanged ? `Updated: ${Object.keys(changes).join(", ")}` : "No changes" };
+
+  let summary = "No changes";
+  if (isChanged) {
+    const parts = [];
+    if (changes.events?.newEvents?.length) {
+      const latest = changes.events.newEvents[changes.events.newEvents.length - 1];
+      parts.push(`${changes.events.newEvents.length} new event(s): ${latest.actionCodeText || "Unknown"}`);
+    }
+    if (changes.updatedAt) {
+      parts.push(`updated ${changes.updatedAt.from || "N/A"} → ${changes.updatedAt.to || "N/A"}`);
+    }
+    if (changes.closed) {
+      parts.push(changes.closed.to ? "case CLOSED" : "case RE-OPENED");
+    }
+    if (changes.actionRequired) {
+      parts.push(changes.actionRequired.to ? "ACTION REQUIRED" : "action no longer required");
+    }
+    for (const key of Object.keys(changes)) {
+      if (["events", "updatedAt", "closed", "actionRequired"].includes(key)) continue;
+      parts.push(`${key} data changed`);
+    }
+    summary = parts.join("; ");
+  }
+
+  return { isChanged, changes, summary };
 }
 
 async function getCookies(config) {
@@ -972,7 +996,7 @@ async function checkAllCases(config) {
 
           // Detect changes (migrate old history format if needed)
           const previousRecord = migrateHistoryRecord(history[receiptNumber]);
-          const { isChanged, changes } = detectChanges(previousRecord?.current, endpointData);
+          const { isChanged, changes, summary } = detectChanges(previousRecord?.current, endpointData);
 
           // Update history
           history[receiptNumber] = {
@@ -997,10 +1021,9 @@ async function checkAllCases(config) {
             console.log(`  ${key}: ${val ? "✓" : "✗ null"}`);
           }
 
-          console.log(`  Status: ${isChanged ? "🔄 CHANGED" : "✓ No changes"}`);
+          console.log(`  Status: ${isChanged ? `🔄 ${summary}` : "✓ No changes"}`);
 
           if (isChanged) {
-            console.log(`  Changes: ${Object.keys(changes).join(", ")}`);
             await triggerNotification(receiptNumber, endpointData, changes, config);
           }
 
