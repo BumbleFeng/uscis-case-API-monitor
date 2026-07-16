@@ -163,6 +163,10 @@ def extract_message_bytes(payload: object) -> bytes | None:
     if isinstance(payload, (bytes, bytearray)):
         return bytes(payload)
     if isinstance(payload, tuple):
+        # imaplib fetch returns (b'id (BODY[] {size}', b'<RFC822 message>')
+        # The second element is the actual email; the first is IMAP metadata.
+        if len(payload) >= 2 and isinstance(payload[1], (bytes, bytearray)):
+            return bytes(payload[1])
         for item in payload:
             result = extract_message_bytes(item)
             if result:
