@@ -880,7 +880,7 @@ async function sendDiscordWebhook(webhookUrl, payload, { retries = 2, delayMs = 
   throw lastError;
 }
 
-function buildDiscordEmbed(receiptNumber, endpointData, changes) {
+function buildDiscordEmbed(receiptNumber, endpointData, changes, summary) {
   const caseData = endpointData.caseStatus?.data || {};
   const changedFields = Object.entries(changes || {});
 
@@ -930,6 +930,7 @@ function buildDiscordEmbed(receiptNumber, endpointData, changes) {
   return {
     embeds: [{
       title: `🔄 Case Update: ${caseData.formName || receiptNumber}`,
+      description: summary || undefined,
       color: 0xff9900,
       fields,
       timestamp: new Date().toISOString(),
@@ -938,18 +939,18 @@ function buildDiscordEmbed(receiptNumber, endpointData, changes) {
   };
 }
 
-async function triggerNotification(receiptNumber, caseData, changes, config) {
+async function triggerNotification(receiptNumber, caseData, changes, summary, config) {
   try {
     console.log(`\n🔔 [NOTIFICATION] Case ${receiptNumber} updated:`);
-    console.log(`  Changes: ${JSON.stringify(changes)}`);
-    
+    console.log(`  Summary: ${summary}`);
+
     const webhookUrl = config?.discordWebhookUrl || process.env.PHONEMONITOR_DISCORD_WEBHOOK_URL;
     if (!webhookUrl) {
       console.log("  ⚠️ No Discord webhook URL configured (set discordWebhookUrl in config or PHONEMONITOR_DISCORD_WEBHOOK_URL env var)");
       return;
     }
-    
-    const payload = buildDiscordEmbed(receiptNumber, caseData, changes);
+
+    const payload = buildDiscordEmbed(receiptNumber, caseData, changes, summary);
     await sendDiscordWebhook(webhookUrl, payload);
     console.log("  ✓ Discord notification sent");
   } catch (error) {
@@ -1024,7 +1025,7 @@ async function checkAllCases(config) {
           console.log(`  Status: ${isChanged ? `🔄 ${summary}` : "✓ No changes"}`);
 
           if (isChanged) {
-            await triggerNotification(receiptNumber, endpointData, changes, config);
+            await triggerNotification(receiptNumber, endpointData, changes, summary, config);
           }
 
           console.log();
