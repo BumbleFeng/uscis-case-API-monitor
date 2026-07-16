@@ -8,7 +8,28 @@
   ],
   "loginUrl": "https://my.uscis.gov/oidc/login",
   "monitorUrl": "https://myaccount.uscis.gov/",
-  "apiUrl": "https://my.uscis.gov/account/case-service/api/cases",
+  "apiUrls": [
+    {
+      "key": "caseStatus",
+      "label": "Case Status",
+      "url": "https://my.uscis.gov/account/case-service/api/cases/{receiptNumber}"
+    },
+    {
+      "key": "location",
+      "label": "Location",
+      "url": "https://my.uscis.gov/secure-messaging/api/case-service/receipt_info/{receiptNumber}"
+    },
+    {
+      "key": "receiptNotice",
+      "label": "Receipt Notice",
+      "url": "https://my.uscis.gov/account/case-service/api/case_status/{receiptNumber}"
+    },
+    {
+      "key": "documents",
+      "label": "Documents",
+      "url": "https://my.uscis.gov/account/case-service/api/cases/{receiptNumber}/documents"
+    }
+  ],
   "monitorReadySelector": "body",
   "contentSelector": "body",
   "postLoginWaitMs": 5000,

@@ -57,6 +57,18 @@ function loginIdentifier(config) {
   return config.uscisUsername || config.uscisEmail;
 }
 
+function getApiUrls(config) {
+  if (Array.isArray(config.apiUrls)) return config.apiUrls;
+  if (config.apiUrl) {
+    return [{ key: "caseStatus", label: "Case Status", url: `${config.apiUrl}/{receiptNumber}` }];
+  }
+  return [];
+}
+
+function resolveUrl(template, receiptNumber) {
+  return template.replace(/{receiptNumber}/g, receiptNumber);
+}
+
 function sha256(value) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
@@ -577,13 +589,15 @@ async function login(config) {
     console.log("✓ Successfully logged in!");
 
     // Validate the session actually works via a real API call before saving
-    if (config.receiptNumbers?.length > 0) {
+    const apiUrls = getApiUrls(config);
+    if (apiUrls.length > 0 && config.receiptNumbers?.length > 0) {
       console.log("Validating session via API...");
       const cookies = await context.cookies();
       const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join("; ");
       const testReceipt = config.receiptNumbers[0];
+      const testUrl = resolveUrl(apiUrls[0].url, testReceipt);
       try {
-        const testRes = await fetch(`${config.apiUrl}/${testReceipt}`, {
+        const testRes = await fetch(testUrl, {
           headers: {
             "Cookie": cookieHeader,
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -605,7 +619,6 @@ async function login(config) {
         if (err.message.startsWith("API validation failed")) {
           throw new Error(`Login appeared to succeed but auth is invalid: ${err.message}`);
         }
-        // Network/timeout during validation — don't block, warn only
         console.warn(`⚠️ Could not validate API session: ${err.message} (saving anyway)`);
       }
     }
@@ -671,53 +684,67 @@ function deepHash(obj) {
   return sha256(JSON.stringify(obj || {}));
 }
 
+function migrateHistoryRecord(record) {
+  if (!record?.current) return record;
+  if (record.current.data !== undefined && !record.current.caseStatus) {
+    return {
+      ...record,
+      current: { caseStatus: record.current },
+      previous: record.previous?.data !== undefined ? { caseStatus: record.previous } : record.previous,
+    };
+  }
+  return record;
+}
+
 function detectChanges(previousData, currentData) {
   const changes = {};
-  
+
   if (!previousData) {
     return { isChanged: true, summary: "New case" };
   }
-  
-  const prevData = previousData.data || {};
-  const currData = currentData.data || {};
-  
-  // Check key fields
-  if (prevData.updatedAt !== currData.updatedAt) {
-    changes.updatedAt = {
-      from: prevData.updatedAt,
-      to: currData.updatedAt,
-    };
+
+  // Case Status endpoint — detailed field comparison
+  const prevCase = previousData.caseStatus;
+  const currCase = currentData.caseStatus;
+  if (currCase?.data) {
+    const prevD = prevCase?.data || {};
+    const currD = currCase.data;
+
+    if (prevD.updatedAt !== currD.updatedAt) {
+      changes.updatedAt = { from: prevD.updatedAt, to: currD.updatedAt };
+    }
+
+    const prevEventCount = (prevD.events || []).length;
+    const currEventCount = (currD.events || []).length;
+    if (prevEventCount !== currEventCount) {
+      changes.events = {
+        from: prevEventCount,
+        to: currEventCount,
+        newEvents: (currD.events || []).slice(prevEventCount),
+      };
+    }
+
+    if (prevD.closed !== currD.closed) {
+      changes.closed = { from: prevD.closed, to: currD.closed };
+    }
+
+    if (prevD.actionRequired !== currD.actionRequired) {
+      changes.actionRequired = { from: prevD.actionRequired, to: currD.actionRequired };
+    }
   }
-  
-  // Check events
-  const prevEventCount = (prevData.events || []).length;
-  const currEventCount = (currData.events || []).length;
-  if (prevEventCount !== currEventCount) {
-    changes.events = {
-      from: prevEventCount,
-      to: currEventCount,
-      newEvents: (currData.events || []).slice(prevEventCount),
-    };
+
+  // Other endpoints — hash comparison
+  for (const key of Object.keys(currentData)) {
+    if (key === "caseStatus") continue;
+    const curr = currentData[key];
+    if (!curr) continue;
+    const prev = previousData[key];
+    if (!prev || deepHash(prev) !== deepHash(curr)) {
+      changes[key] = { changed: true };
+    }
   }
-  
-  // Check closed status
-  if (prevData.closed !== currData.closed) {
-    changes.closed = {
-      from: prevData.closed,
-      to: currData.closed,
-    };
-  }
-  
-  // Check if any important field changed
-  if (prevData.actionRequired !== currData.actionRequired) {
-    changes.actionRequired = {
-      from: prevData.actionRequired,
-      to: currData.actionRequired,
-    };
-  }
-  
+
   const isChanged = Object.keys(changes).length > 0;
-  
   return { isChanged, changes, summary: isChanged ? `Updated: ${Object.keys(changes).join(", ")}` : "No changes" };
 }
 
@@ -737,59 +764,73 @@ async function getCookies(config) {
   return cookies.map(c => `${c.name}=${c.value}`).join("; ");
 }
 
-async function fetchSingleCase(receiptNumber, config) {
-  const apiUrl = `${config.apiUrl}/${receiptNumber}`;
+async function fetchEndpoint(url, config) {
   const cookieHeader = await getCookies(config);
-  
+
+  let response;
   try {
-    let response;
-    try {
-      response = await fetch(apiUrl, {
-        method: "GET",
-        headers: {
-          "Cookie": cookieHeader,
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-          "Accept": "application/json",
-          "Referer": config.monitorUrl,
-        },
-      });
-    } catch (networkErr) {
-      const err = new Error(`Network error: ${networkErr.message}`);
-      err.code = "NETWORK_ERROR";
-      throw err;
-    }
-    
-    // Check for auth failure: HTTP 401 OR API response with data: null + error object
-    if (response.status === 401) {
-      const error = new Error("SESSION_EXPIRED");
-      error.code = "SESSION_EXPIRED";
-      error.statusCode = 401;
-      throw error;
-    }
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    
-    const data = await response.json();
-    
-    // Also check for API-level auth failure: data is null with error object
-    if (data.data === null && data.error) {
-      const error = new Error("SESSION_EXPIRED");
-      error.code = "SESSION_EXPIRED";
-      error.apiError = data.error;
-      throw error;
-    }
-    
-    return data;
-  } catch (error) {
-    // Don't suppress SESSION_EXPIRED or NETWORK_ERROR - let them propagate with code
-    if (error.code === "SESSION_EXPIRED" || error.code === "NETWORK_ERROR") {
-      throw error;
-    }
-    console.error(`❌ Error fetching ${receiptNumber}: ${error.message}`);
-    return null;
+    response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Cookie": cookieHeader,
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Referer": config.monitorUrl,
+      },
+    });
+  } catch (networkErr) {
+    const err = new Error(`Network error: ${networkErr.message}`);
+    err.code = "NETWORK_ERROR";
+    throw err;
   }
+
+  if (response.status === 401) {
+    const error = new Error("SESSION_EXPIRED");
+    error.code = "SESSION_EXPIRED";
+    error.statusCode = 401;
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+
+  if (data.data === null && data.error) {
+    const error = new Error("SESSION_EXPIRED");
+    error.code = "SESSION_EXPIRED";
+    error.apiError = data.error;
+    throw error;
+  }
+
+  return data;
+}
+
+async function fetchAllEndpoints(receiptNumber, config) {
+  const apiUrls = getApiUrls(config);
+  const results = {};
+
+  for (const endpoint of apiUrls) {
+    const url = resolveUrl(endpoint.url, receiptNumber);
+    console.log(`  📡 ${endpoint.label}: ${url}`);
+    try {
+      results[endpoint.key] = await fetchEndpoint(url, config);
+    } catch (error) {
+      if (error.code === "SESSION_EXPIRED") throw error;
+      console.log(`  ⚠️  ${endpoint.label}: ${error.message}`);
+      results[endpoint.key] = null;
+    }
+  }
+
+  return results;
+}
+
+async function fetchSingleCase(receiptNumber, config) {
+  const apiUrls = getApiUrls(config);
+  if (apiUrls.length === 0) throw new Error("No API URLs configured");
+  const url = resolveUrl(apiUrls[0].url, receiptNumber);
+  return fetchEndpoint(url, config);
 }
 
 async function sendDiscordWebhook(webhookUrl, payload, { retries = 2, delayMs = 3000 } = {}) {
@@ -815,25 +856,45 @@ async function sendDiscordWebhook(webhookUrl, payload, { retries = 2, delayMs = 
   throw lastError;
 }
 
-function buildDiscordEmbed(receiptNumber, caseData, changes) {
-  const data = caseData.data || {};
+function buildDiscordEmbed(receiptNumber, endpointData, changes) {
+  const caseData = endpointData.caseStatus?.data || {};
   const changedFields = Object.entries(changes || {});
-  
+
   const fields = [
     { name: "Receipt Number", value: receiptNumber, inline: true },
-    { name: "Applicant", value: data.applicantName || "N/A", inline: true },
-    { name: "Updated At", value: data.updatedAt || "N/A", inline: true },
+    { name: "Applicant", value: caseData.applicantName || "N/A", inline: true },
+    { name: "Updated At", value: caseData.updatedAt || "N/A", inline: true },
   ];
-  
+
+  // Supplementary endpoint data
+  const apiUrls = [
+    { key: "location", label: "Location" },
+    { key: "receiptNotice", label: "Receipt Notice" },
+    { key: "documents", label: "Documents" },
+  ];
+  for (const { key, label } of apiUrls) {
+    const raw = endpointData[key];
+    if (!raw) continue;
+    const payload = raw.data ?? raw;
+    if (key === "documents" && Array.isArray(payload)) {
+      fields.push({ name: label, value: `${payload.length} document(s)`, inline: true });
+    } else if (payload && typeof payload === "object") {
+      const preview = JSON.stringify(payload).slice(0, 200);
+      fields.push({ name: label, value: preview || "Available", inline: false });
+    }
+  }
+
   for (const [key, detail] of changedFields) {
     if (key === "events" && detail.newEvents?.length) {
       for (const evt of detail.newEvents) {
         fields.push({
-          name: `New Event`,
+          name: "New Event",
           value: `**${evt.actionCodeText || "Unknown"}**\n${evt.dispositionCodeText || ""}\n${evt.eventDate || ""}`,
         });
       }
-    } else {
+    } else if (detail.changed) {
+      // Supplementary endpoint changed
+    } else if (detail.from !== undefined || detail.to !== undefined) {
       fields.push({
         name: key,
         value: `${detail.from ?? "—"} → ${detail.to ?? "—"}`,
@@ -841,10 +902,10 @@ function buildDiscordEmbed(receiptNumber, caseData, changes) {
       });
     }
   }
-  
+
   return {
     embeds: [{
-      title: `🔄 Case Update: ${data.formName || receiptNumber}`,
+      title: `🔄 Case Update: ${caseData.formName || receiptNumber}`,
       color: 0xff9900,
       fields,
       timestamp: new Date().toISOString(),
@@ -894,8 +955,9 @@ async function checkAllCases(config) {
       for (const receiptNumber of receiptNumbers) {
         try {
           console.log(`⏳ Fetching ${receiptNumber}...`);
-          const caseData = await fetchSingleCase(receiptNumber, config);
-          
+          const endpointData = await fetchAllEndpoints(receiptNumber, config);
+
+          const caseData = endpointData.caseStatus;
           if (!caseData || !caseData.data) {
             console.log(`⚠️  Could not fetch ${receiptNumber} (invalid response), skipping...\n`);
             results.push({
@@ -908,20 +970,19 @@ async function checkAllCases(config) {
             continue;
           }
 
-          
-          // Detect changes
-          const previousRecord = history[receiptNumber];
-          const { isChanged, changes } = detectChanges(previousRecord?.current, caseData);
-          
+          // Detect changes (migrate old history format if needed)
+          const previousRecord = migrateHistoryRecord(history[receiptNumber]);
+          const { isChanged, changes } = detectChanges(previousRecord?.current, endpointData);
+
           // Update history
           history[receiptNumber] = {
             lastFetchAt: new Date().toISOString(),
-            lastHash: deepHash(caseData),
-            current: caseData,
+            lastHash: deepHash(endpointData),
+            current: endpointData,
             previous: previousRecord?.current || null,
             changes: isChanged ? changes : null,
           };
-          
+
           // Print summary
           const data = caseData.data || {};
           console.log(`✓ ${data.formName || "N/A"}`);
@@ -929,17 +990,22 @@ async function checkAllCases(config) {
           console.log(`  Name: ${data.applicantName || "N/A"}`);
           console.log(`  Updated: ${data.updatedAt || "N/A"}`);
           console.log(`  Events: ${(data.events || []).length}`);
+
+          for (const key of Object.keys(endpointData)) {
+            if (key === "caseStatus") continue;
+            const val = endpointData[key];
+            console.log(`  ${key}: ${val ? "✓" : "✗ null"}`);
+          }
+
           console.log(`  Status: ${isChanged ? "🔄 CHANGED" : "✓ No changes"}`);
-          
+
           if (isChanged) {
             console.log(`  Changes: ${Object.keys(changes).join(", ")}`);
-            
-            // Trigger notification
-            await triggerNotification(receiptNumber, caseData, changes, config);
+            await triggerNotification(receiptNumber, endpointData, changes, config);
           }
-          
+
           console.log();
-          
+
           results.push({
             receiptNumber,
             isChanged,
@@ -947,11 +1013,10 @@ async function checkAllCases(config) {
             updatedAt: data.updatedAt || null,
           });
         } catch (error) {
-          // Check if it's a session expired error
           if (error.code === "SESSION_EXPIRED") {
             console.error(`⚠️  Session expired while fetching ${receiptNumber}`);
             sessionExpired = true;
-            throw error; // Bubble up to outer loop for retry
+            throw error;
           }
 
           if (error.code === "NETWORK_ERROR") {
@@ -1033,25 +1098,24 @@ async function checkAllCases(config) {
   }
 }
 
-// Legacy function for single case fetch (for backward compatibility)
 async function fetchCaseJson(config) {
   requireAuthState();
-  
+
   const receiptNumbers = config.receiptNumbers || (config.receiptNumber ? [config.receiptNumber] : []);
   if (receiptNumbers.length === 0) {
     throw new Error("receiptNumbers not found in config. Please add it to config.local.json");
   }
-  
+
   const receiptNumber = receiptNumbers[0];
-  const caseData = await fetchSingleCase(receiptNumber, config);
-  
+  const endpointData = await fetchAllEndpoints(receiptNumber, config);
+  const caseData = endpointData.caseStatus;
+
   if (!caseData) {
     throw new Error(`Failed to fetch case ${receiptNumber}`);
   }
-  
-  // Save the JSON data
+
   const caseFile = path.join(stateDir, "case.json");
-  fs.writeFileSync(caseFile, JSON.stringify(caseData, null, 2) + "\n", "utf8");
+  fs.writeFileSync(caseFile, JSON.stringify(endpointData, null, 2) + "\n", "utf8");
   console.log(`\n✓ Case data saved to ${caseFile}`);
   console.log(`\n📋 Case Summary:`);
   console.log(`   Receipt #: ${caseData.data?.receiptNumber}`);
@@ -1059,10 +1123,14 @@ async function fetchCaseJson(config) {
   console.log(`   Submitted: ${caseData.data?.submissionDate}`);
   console.log(`   Updated: ${caseData.data?.updatedAt}`);
   console.log(`   Events: ${caseData.data?.events?.length || 0}`);
-  
-  // Also print full JSON
+
+  for (const key of Object.keys(endpointData)) {
+    if (key === "caseStatus") continue;
+    console.log(`   ${key}: ${endpointData[key] ? "✓ data received" : "✗ null"}`);
+  }
+
   console.log(`\n📄 Full JSON:`);
-  console.log(JSON.stringify(caseData, null, 2));
+  console.log(JSON.stringify(endpointData, null, 2));
 }
 
 async function poll(config) {
