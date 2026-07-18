@@ -35,7 +35,9 @@
   "postLoginWaitMs": 5000,
   "otpWaitTimeoutMs": 30000,
   "scheduler": {
-    "intervalHours": 1
+    "intervalHours": 1,
+    "startHour": 9,
+    "endHour": 20
   },
   "otp": {
     "mode": "sms-imessage",

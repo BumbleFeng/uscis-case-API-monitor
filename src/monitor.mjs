@@ -1189,15 +1189,21 @@ async function poll(config) {
 
 // --- Scheduler ---
 
-function isWithinSchedule() {
-  // Check if current time is within ET weekday 9am-8pm
+function getScheduleWindow(config) {
+  const startHour = config?.scheduler?.startHour ?? 9;
+  const endHour = config?.scheduler?.endHour ?? 20;
+  return { startHour, endHour, windowHours: endHour - startHour };
+}
+
+function isWithinSchedule(config) {
+  const { startHour, endHour } = getScheduleWindow(config);
   const now = new Date();
   const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
   const et = new Date(etStr);
-  const day = et.getDay(); // 0=Sun, 6=Sat
+  const day = et.getDay();
   const hour = et.getHours();
   if (day === 0 || day === 6) return false;
-  return hour >= 9 && hour < 20;
+  return hour >= startHour && hour < endHour;
 }
 
 function getSchedulerIntervalMs(config) {
@@ -1210,8 +1216,8 @@ function getSchedulerIntervalMs(config) {
   return Math.max(Math.round(hours * 60 * 60 * 1000), 60000);
 }
 
-function nextScheduledRun(intervalMs) {
-  // Returns ms until the next valid clock-aligned slot in the ET weekday window.
+function nextScheduledRun(intervalMs, config) {
+  const { startHour, endHour, windowHours } = getScheduleWindow(config);
   const now = new Date();
   const etStr = now.toLocaleString("en-US", { timeZone: "America/New_York" });
   const et = new Date(etStr);
@@ -1221,34 +1227,31 @@ function nextScheduledRun(intervalMs) {
   const second = et.getSeconds();
   const millisecond = et.getMilliseconds();
   const isWeekday = day >= 1 && day <= 5;
-  const isWithinWindow = isWeekday && hour >= 9 && hour < 20;
-  
-  // If within schedule, wait until the next aligned slot.
+  const isWithinWindow = isWeekday && hour >= startHour && hour < endHour;
+
   if (isWithinWindow) {
     const intervalMinutes = Math.max(Math.round(intervalMs / 60000), 1);
-    const minutesSinceWindowStart = (hour - 9) * 60 + minute;
+    const minutesSinceWindowStart = (hour - startHour) * 60 + minute;
     const remainder = minutesSinceWindowStart % intervalMinutes;
     const minutesToNextSlot = remainder === 0 ? intervalMinutes : intervalMinutes - remainder;
     const nextSlotMinutesSinceWindowStart = minutesSinceWindowStart + minutesToNextSlot;
 
-    // Keep checks inside the 9am-8pm ET window. Anything landing at or after 8pm rolls to next weekday 9am.
-    if (nextSlotMinutesSinceWindowStart < 11 * 60) {
+    if (nextSlotMinutesSinceWindowStart < windowHours * 60) {
       const waitMs = minutesToNextSlot * 60000 - second * 1000 - millisecond;
       return Math.max(waitMs, 5000);
     }
   }
-  
-  // Calculate time until next weekday 9am ET
+
   let daysUntil;
-  if (day === 6) daysUntil = 2; // Sat -> Mon
-  else if (day === 0) daysUntil = 1; // Sun -> Mon
-  else if (isWithinWindow) daysUntil = (day === 5) ? 3 : 1; // No remaining slot today
-  else if (hour >= 20) daysUntil = (day === 5) ? 3 : 1; // After 8pm, next weekday
-  else daysUntil = 0; // Before 9am today
-  
+  if (day === 6) daysUntil = 2;
+  else if (day === 0) daysUntil = 1;
+  else if (isWithinWindow) daysUntil = (day === 5) ? 3 : 1;
+  else if (hour >= endHour) daysUntil = (day === 5) ? 3 : 1;
+  else daysUntil = 0;
+
   const next = new Date(et);
   next.setDate(next.getDate() + daysUntil);
-  next.setHours(9, 0, 0, 0);
+  next.setHours(startHour, 0, 0, 0);
   return Math.max(next.getTime() - et.getTime(), 60000);
 }
 
@@ -1290,12 +1293,14 @@ async function runScheduler(config) {
     ? `${intervalHours} hour${intervalHours === 1 ? "" : "s"}`
     : `${intervalHours} hours`;
 
+  const { startHour, endHour } = getScheduleWindow(config);
+  const fmt = (h) => `${h % 12 || 12}${h < 12 ? "am" : "pm"}`;
   console.log("🕐 USCIS Case Monitor Scheduler started");
-  console.log(`   Schedule: Weekdays 9am–8pm ET, every ${intervalLabel}`);
+  console.log(`   Schedule: Weekdays ${fmt(startHour)}–${fmt(endHour)} ET, every ${intervalLabel}`);
   console.log("   Press Ctrl+C to stop\n");
-  
+
   const run = async () => {
-    if (isWithinSchedule()) {
+    if (isWithinSchedule(config)) {
       try {
         await scheduledCheck(config);
       } catch (error) {
@@ -1306,7 +1311,7 @@ async function runScheduler(config) {
       console.log(`⏸️  Outside schedule (${etStr} ET). Skipping.`);
     }
     
-    const waitMs = nextScheduledRun(intervalMs);
+    const waitMs = nextScheduledRun(intervalMs, config);
     const nextTime = new Date(Date.now() + waitMs);
     const nextEtStr = nextTime.toLocaleString("en-US", { timeZone: "America/New_York", dateStyle: "short", timeStyle: "short" });
     const waitMin = Math.round(waitMs / 60000);
