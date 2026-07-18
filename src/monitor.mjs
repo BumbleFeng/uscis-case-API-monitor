@@ -11,6 +11,7 @@ const snapshotsDir = path.join(cwd, "snapshots");
 const authFile = path.join(stateDir, "auth.json");
 const lastFile = path.join(stateDir, "last.json");
 const configFile = path.join(cwd, "config.local.json");
+let snapshotsEnabled = true;
 const exampleConfigFile = path.join(cwd, "config.example.json");
 
 const LOGIN_EMAIL_SELECTORS = [
@@ -340,6 +341,7 @@ async function pageSummary(page) {
 }
 
 async function writeDebugSnapshot(page, label) {
+  if (!snapshotsEnabled) return null;
   const stamp = new Date().toISOString().replaceAll(":", "-");
   const base = path.join(snapshotsDir, `${stamp}-${label}`);
   await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
@@ -653,6 +655,7 @@ function requireAuthState() {
 }
 
 function saveSnapshot(prefix, text, html) {
+  if (!snapshotsEnabled) return null;
   const stamp = new Date().toISOString().replaceAll(":", "-");
   const textFile = path.join(snapshotsDir, `${stamp}-${prefix}.txt`);
   const htmlFile = path.join(snapshotsDir, `${stamp}-${prefix}.html`);
@@ -1327,6 +1330,7 @@ async function runScheduler(config) {
 async function main() {
   ensureDirs();
   const config = loadConfig();
+  snapshotsEnabled = config.enableSnapshots !== false;
   const command = process.argv[2] || "poll";
   if (command === "login" || command === "reauth") {
     await login(config);
